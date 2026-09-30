@@ -257,6 +257,8 @@ func TestNewOtelRedisHook(t *testing.T) {
 	hook := newOtelRedisHook("localhost:6379")
 	assert.NotNil(t, hook)
 	assert.Equal(t, "localhost:6379", hook.Addr)
+	assert.Equal(t, "localhost", hook.host)
+	assert.Equal(t, 6379, hook.port)
 }
 
 func TestProcessHook_CreatesSpan(t *testing.T) {

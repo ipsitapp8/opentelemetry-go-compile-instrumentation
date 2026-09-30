@@ -48,11 +48,16 @@ func initInstrumentation() {
 
 type otelRedisHook struct {
 	Addr string
+	host string
+	port int
 }
 
 func newOtelRedisHook(addr string) *otelRedisHook {
+	host, port := semconv.ParseEndpoint(addr)
 	return &otelRedisHook{
 		Addr: addr,
+		host: host,
+		port: port,
 	}
 }
 
@@ -65,7 +70,8 @@ func (o *otelRedisHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 		initInstrumentation()
 		fullName := cmd.FullName()
 		request := semconv.RedisRequest{
-			Endpoint:  o.Addr,
+			Host:      o.host,
+			Port:      o.port,
 			FullName:  fullName,
 			Statement: getRedisV9Statement(cmd),
 		}
@@ -112,7 +118,8 @@ func (o *otelRedisHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redi
 		cmd := redis.NewCmd(ctx, "pipeline", summary)
 		fullName := cmd.FullName()
 		request := semconv.RedisRequest{
-			Endpoint:  o.Addr,
+			Host:      o.host,
+			Port:      o.port,
 			FullName:  fullName,
 			Statement: getRedisV9Statement(cmd),
 		}

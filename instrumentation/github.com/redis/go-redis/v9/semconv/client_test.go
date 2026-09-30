@@ -19,7 +19,8 @@ func TestRedisClientRequestTraceAttrs(t *testing.T) {
 		{
 			name: "basic GET command",
 			req: RedisRequest{
-				Endpoint:  "localhost:6379",
+				Host:      "localhost",
+				Port:      6379,
 				FullName:  "get",
 				Statement: "get mykey",
 			},
@@ -35,7 +36,8 @@ func TestRedisClientRequestTraceAttrs(t *testing.T) {
 		{
 			name: "SET command with value",
 			req: RedisRequest{
-				Endpoint:  "redis.example.com:6380",
+				Host:      "redis.example.com",
+				Port:      6380,
 				FullName:  "set",
 				Statement: "set mykey myvalue",
 			},
@@ -51,7 +53,8 @@ func TestRedisClientRequestTraceAttrs(t *testing.T) {
 		{
 			name: "HSET command",
 			req: RedisRequest{
-				Endpoint:  "127.0.0.1:6379",
+				Host:      "127.0.0.1",
+				Port:      6379,
 				FullName:  "hset",
 				Statement: "hset myhash field1 value1",
 			},
@@ -67,7 +70,8 @@ func TestRedisClientRequestTraceAttrs(t *testing.T) {
 		{
 			name: "pipeline command",
 			req: RedisRequest{
-				Endpoint:  "localhost:6379",
+				Host:      "localhost",
+				Port:      6379,
 				FullName:  "pipeline",
 				Statement: "pipeline get/set/del/...",
 			},
@@ -83,7 +87,7 @@ func TestRedisClientRequestTraceAttrs(t *testing.T) {
 		{
 			name: "empty fields",
 			req: RedisRequest{
-				Endpoint:  "",
+				Host:      "",
 				FullName:  "",
 				Statement: "",
 			},
@@ -98,7 +102,7 @@ func TestRedisClientRequestTraceAttrs(t *testing.T) {
 		{
 			name: "endpoint without port",
 			req: RedisRequest{
-				Endpoint:  "redis.local",
+				Host:      "redis.local",
 				FullName:  "ping",
 				Statement: "ping",
 			},
@@ -134,7 +138,8 @@ func TestRedisClientRequestTraceAttrs(t *testing.T) {
 
 func TestRedisClientRequestTraceAttrs_ContainsDBSystemRedis(t *testing.T) {
 	req := RedisRequest{
-		Endpoint:  "localhost:6379",
+		Host:      "localhost",
+		Port:      6379,
 		FullName:  "get",
 		Statement: "get key",
 	}
@@ -153,7 +158,8 @@ func TestRedisClientRequestTraceAttrs_ContainsDBSystemRedis(t *testing.T) {
 
 func TestRedisClientRequestTraceAttrs_ContainsNetworkTransportTCP(t *testing.T) {
 	req := RedisRequest{
-		Endpoint:  "localhost:6379",
+		Host:      "localhost",
+		Port:      6379,
 		FullName:  "get",
 		Statement: "get key",
 	}
@@ -168,4 +174,49 @@ func TestRedisClientRequestTraceAttrs_ContainsNetworkTransportTCP(t *testing.T) 
 		}
 	}
 	assert.True(t, found, "should contain network.transport=tcp attribute")
+}
+
+func TestParseEndpoint(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+		host     string
+		port     int
+	}{
+		{name: "host and port", endpoint: "localhost:6379", host: "localhost", port: 6379},
+		{name: "ipv4", endpoint: "127.0.0.1:6380", host: "127.0.0.1", port: 6380},
+		{name: "ipv6", endpoint: "[::1]:6379", host: "::1", port: 6379},
+		{name: "no port", endpoint: "redis.local", host: "redis.local", port: 0},
+		{name: "empty", endpoint: "", host: "", port: 0},
+		{name: "non numeric port", endpoint: "redis.local:abc", host: "redis.local", port: 0},
+		{name: "zero port", endpoint: "redis.local:0", host: "redis.local", port: 0},
+		{name: "empty port", endpoint: "redis.local:", host: "redis.local", port: 0},
+		{name: "unix socket", endpoint: "/var/run/redis.sock", host: "/var/run/redis.sock", port: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host, port := ParseEndpoint(tt.endpoint)
+			assert.Equal(t, tt.host, host)
+			assert.Equal(t, tt.port, port)
+		})
+	}
+}
+
+func TestRedisClientRequestTraceAttrs_NoPortOmitsServerPort(t *testing.T) {
+	attrs := RedisClientRequestTraceAttrs(RedisRequest{Host: "redis.local", FullName: "get"})
+
+	for _, attr := range attrs {
+		assert.NotEqual(t, "server.port", string(attr.Key))
+	}
+}
+
+func BenchmarkRedisClientRequestTraceAttrs(b *testing.B) {
+	host, port := ParseEndpoint("localhost:6379")
+	req := RedisRequest{Host: host, Port: port, FullName: "get", Statement: "get mykey"}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		RedisClientRequestTraceAttrs(req)
+	}
 }
