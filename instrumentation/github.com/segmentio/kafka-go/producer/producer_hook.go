@@ -6,6 +6,7 @@ package producer
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 
 	kafka "github.com/segmentio/kafka-go"
@@ -109,6 +110,11 @@ func BeforeWriteMessages(
 		endpoint = w.Addr.String()
 	}
 
+	// msgs is the caller's slice, and the Headers of its messages can share a
+	// backing array with other messages or goroutines. Inject into copies so
+	// the caller's messages are left alone.
+	msgs = slices.Clone(msgs)
+
 	spans := make([]trace.Span, len(msgs))
 	for i := range msgs {
 		topic := msgs[i].Topic
@@ -127,6 +133,7 @@ func BeforeWriteMessages(
 			trace.WithSpanKind(trace.SpanKindProducer),
 			trace.WithAttributes(semconv.KafkaRequestTraceAttrs(req)...),
 		)
+		msgs[i].Headers = slices.Clone(msgs[i].Headers)
 		propagator.Inject(msgCtx, kafkaprop.NewHeaderCarrier(&msgs[i].Headers))
 		spans[i] = span
 	}

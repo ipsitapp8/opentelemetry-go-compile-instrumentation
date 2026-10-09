@@ -66,17 +66,15 @@ func TestBeforeWriteMessages_InjectsHeadersAndStartsSpans(t *testing.T) {
 
 	ictx := hooktest.NewMockHookContext(w, context.Background(), msgs)
 	BeforeWriteMessages(ictx, w, context.Background(), msgs...)
-
-	// Each message must carry the propagated trace context.
-	for i := range msgs {
-		hc := kafkaprop.NewHeaderCarrier(&msgs[i].Headers)
-		assert.NotEmpty(t, hc.Get("traceparent"), "message %d missing traceparent", i)
-	}
-
-	// The (header-injected) slice must be written back for the real call.
+	// The (header-injected) slice must be written back for the real call, and
+	// each message in it must carry the propagated trace context.
 	written, ok := ictx.GetParam(2).([]kafka.Message)
 	require.True(t, ok)
 	require.Len(t, written, 2)
+	for i := range written {
+		hc := kafkaprop.NewHeaderCarrier(&written[i].Headers)
+		assert.NotEmpty(t, hc.Get("traceparent"), "message %d missing traceparent", i)
+	}
 
 	AfterWriteMessages(ictx, nil)
 
@@ -341,4 +339,68 @@ func TestEnsureAsyncFailureLogging_ConcurrentCallsAreSafe(t *testing.T) {
 		})
 	}
 	wg.Wait()
+}
+
+func TestBeforeWriteMessages_DoesNotMutateCallerMessages(t *testing.T) {
+	setupTest(t)
+
+	// Both messages share one backing array with spare capacity, the way a
+	// shared base header set usually looks.
+	base := make([]kafka.Header, 1, 4)
+	base[0] = kafka.Header{Key: "app", Value: []byte("orders")}
+	msgs := []kafka.Message{
+		{Value: []byte("a"), Headers: base},
+		{Value: []byte("b"), Headers: base},
+		{Value: []byte("c")},
+	}
+
+	w := &kafka.Writer{Addr: kafka.TCP("localhost:9092"), Topic: "orders"}
+	ictx := hooktest.NewMockHookContext(w, context.Background(), msgs)
+	BeforeWriteMessages(ictx, w, context.Background(), msgs...)
+
+	// The caller's messages are exactly as they were passed in.
+	assert.Equal(t, base, msgs[0].Headers)
+	assert.Equal(t, base, msgs[1].Headers)
+	assert.Nil(t, msgs[2].Headers)
+	assert.Equal(t, "orders", string(base[:cap(base)][0].Value))
+	assert.Empty(t, base[:cap(base)][1].Key, "spare capacity of the caller's headers was written to")
+
+	// The messages that go out keep the existing headers and each get their
+	// own traceparent.
+	written, ok := ictx.GetParam(2).([]kafka.Message)
+	require.True(t, ok)
+	require.Len(t, written, 3)
+	seen := map[string]bool{}
+	for i := range written {
+		hc := kafkaprop.NewHeaderCarrier(&written[i].Headers)
+		tp := hc.Get("traceparent")
+		require.NotEmpty(t, tp, "message %d missing traceparent", i)
+		seen[tp] = true
+	}
+	assert.Len(t, seen, 3, "every message should carry its own span's traceparent")
+	assert.Equal(t, "orders", kafkaprop.NewHeaderCarrier(&written[0].Headers).Get("app"))
+
+	AfterWriteMessages(ictx, nil)
+}
+
+func TestBeforeWriteMessages_SharedHeadersAcrossGoroutines(t *testing.T) {
+	setupTest(t)
+
+	base := make([]kafka.Header, 1, 4)
+	base[0] = kafka.Header{Key: "app", Value: []byte("orders")}
+	w := &kafka.Writer{Addr: kafka.TCP("localhost:9092"), Topic: "orders"}
+
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			msgs := []kafka.Message{{Value: []byte("x"), Headers: base}}
+			ictx := hooktest.NewMockHookContext(w, context.Background(), msgs)
+			BeforeWriteMessages(ictx, w, context.Background(), msgs...)
+			AfterWriteMessages(ictx, nil)
+		})
+	}
+	wg.Wait()
+
+	assert.Len(t, base, 1)
+	assert.Empty(t, base[:cap(base)][1].Key)
 }
